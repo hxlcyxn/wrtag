@@ -234,6 +234,7 @@ func ProcessDir(
 
 	dc := NewDirContext()
 
+	// release locks even on errors, but before source cleanup takes overlapping locks
 	if err := func() error {
 		// lock both source and destination directories
 		unlock := lockPaths(
