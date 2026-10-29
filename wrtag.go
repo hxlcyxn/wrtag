@@ -232,83 +232,88 @@ func ProcessDir(
 		}
 	}
 
-	// lock both source and destination directories
-	unlock := lockPaths(
-		srcDir,
-		destDir,
-	)
-
 	dc := NewDirContext()
 
-	// move/copy and tag
-	for i := range pathTags {
-		pt, rt, destPath := pathTags[i], releaseTracks[i], destPaths[i]
+	if err := func() error {
+		// lock both source and destination directories
+		unlock := lockPaths(
+			srcDir,
+			destDir,
+		)
+		defer unlock()
 
-		if err := op.ProcessPath(ctx, dc, pt.Path, destPath, cfg.FileMode); err != nil {
-			return nil, fmt.Errorf("process path %q: %w", filepath.Base(pt.Path), err)
-		}
+		// move/copy and tag
+		for i := range pathTags {
+			pt, rt, destPath := pathTags[i], releaseTracks[i], destPaths[i]
 
-		var destTags = map[string][]string{}
-		WriteRelease(destTags, release, labelInfo, genres, &rt.media, &rt.track)
-		ApplyTagConfig(destTags, pt.Tags, cfg.TagConfig)
+			if err := op.ProcessPath(ctx, dc, pt.Path, destPath, cfg.FileMode); err != nil {
+				return fmt.Errorf("process path %q: %w", filepath.Base(pt.Path), err)
+			}
 
-		if lvl, slog := slog.LevelDebug, slog.Default(); slog.Enabled(ctx, lvl) {
-			logTagChanges(ctx, pt.Path, lvl, pt.Tags, destTags)
-		}
+			var destTags = map[string][]string{}
+			WriteRelease(destTags, release, labelInfo, genres, &rt.media, &rt.track)
+			ApplyTagConfig(destTags, pt.Tags, cfg.TagConfig)
 
-		if !op.CanModifyDest() {
-			continue
-		}
-		if tags.Equal(pt.Tags, destTags) {
-			// try to avoid more io if we can
-			continue
-		}
+			if lvl, slog := slog.LevelDebug, slog.Default(); slog.Enabled(ctx, lvl) {
+				logTagChanges(ctx, pt.Path, lvl, pt.Tags, destTags)
+			}
 
-		if err := tags.WriteTags(destPath, destTags, tags.Clear); err != nil {
-			return nil, fmt.Errorf("write tag file: %w", err)
-		}
-	}
+			if !op.CanModifyDest() {
+				continue
+			}
+			if tags.Equal(pt.Tags, destTags) {
+				// try to avoid more io if we can
+				continue
+			}
 
-	destCover, err := processCover(ctx, op, dc, destDir, cover, coverTmp, cfg.FileMode)
-	if err != nil {
-		return nil, fmt.Errorf("place cover: %w", err)
-	}
-
-	// process addons with new files
-	if op.CanModifyDest() {
-		for _, addon := range cfg.Addons {
-			if err := addon.ProcessRelease(ctx, destCover, destPaths); err != nil {
-				return nil, fmt.Errorf("process addon: %w", err)
+			if err := tags.WriteTags(destPath, destTags, tags.Clear); err != nil {
+				return fmt.Errorf("write tag file: %w", err)
 			}
 		}
-	}
 
-	for kf := range cfg.KeepFiles {
-		matches, err := fileutil.GlobDir(srcDir, kf)
+		destCover, err := processCover(ctx, op, dc, destDir, cover, coverTmp, cfg.FileMode)
 		if err != nil {
-			return nil, fmt.Errorf("glob keep file %q: %w", kf, err)
+			return fmt.Errorf("place cover: %w", err)
 		}
-		for _, src := range matches {
-			// only keep regular files, so a pattern like "*" can't pick up disc dirs
-			if info, err := os.Stat(src); err != nil || !info.Mode().IsRegular() {
-				continue
-			}
-			// don't let a broad pattern overwrite the tracks or cover we've already placed
-			if src == cover || slices.ContainsFunc(pathTags, func(pt PathTags) bool { return pt.Path == src }) {
-				continue
-			}
-			name := filepath.Base(src)
-			if err := op.ProcessPath(ctx, dc, src, filepath.Join(destDir, name), cfg.FileMode); err != nil {
-				return nil, fmt.Errorf("process keep file %q: %w", name, err)
+
+		// process addons with new files
+		if op.CanModifyDest() {
+			for _, addon := range cfg.Addons {
+				if err := addon.ProcessRelease(ctx, destCover, destPaths); err != nil {
+					return fmt.Errorf("process addon: %w", err)
+				}
 			}
 		}
-	}
 
-	if err := trimDestDir(ctx, dc, destDir, op.CanModifyDest()); err != nil {
-		return nil, fmt.Errorf("trim: %w", err)
-	}
+		for kf := range cfg.KeepFiles {
+			matches, err := fileutil.GlobDir(srcDir, kf)
+			if err != nil {
+				return fmt.Errorf("glob keep file %q: %w", kf, err)
+			}
+			for _, src := range matches {
+				// only keep regular files, so a pattern like "*" can't pick up disc dirs
+				if info, err := os.Stat(src); err != nil || !info.Mode().IsRegular() {
+					continue
+				}
+				// don't let a broad pattern overwrite the tracks or cover we've already placed
+				if src == cover || slices.ContainsFunc(pathTags, func(pt PathTags) bool { return pt.Path == src }) {
+					continue
+				}
+				name := filepath.Base(src)
+				if err := op.ProcessPath(ctx, dc, src, filepath.Join(destDir, name), cfg.FileMode); err != nil {
+					return fmt.Errorf("process keep file %q: %w", name, err)
+				}
+			}
+		}
 
-	unlock()
+		if err := trimDestDir(ctx, dc, destDir, op.CanModifyDest()); err != nil {
+			return fmt.Errorf("trim: %w", err)
+		}
+
+		return nil
+	}(); err != nil {
+		return nil, err
+	}
 
 	if srcDir != destDir {
 		if err := op.PostSource(ctx, dc, cfg.PathFormat.Root(), srcDir); err != nil {
