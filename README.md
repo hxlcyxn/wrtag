@@ -149,6 +149,10 @@ The full list of core `wrtag` operations. They can be used in other tools like `
 | `copy`    | Copies files from the source to the destination directory.                                                      |
 | `reflink` | On supported filesystems, creates a reflink (copy-on-write) clone of a file from the source to the destination. |
 
+For different source and destination paths, copy and reflink apply `file-mode` and close the destination-local staging file before publishing it. Moves use a rename when source permissions already match; otherwise, or across filesystems, they stage a copy before publishing and removing the source. Staged files belong to the importing user and inherit the destination directory's group when the directory has the setgid bit set. Ordinary renames retain the source owner and group. Same-path retags leave modes unchanged.
+
+Failures before publication preserve the source and any existing destination. Failure to remove a move source after publication leaves both copies and returns an error. Later tag or addon failures can leave a partially imported album; imports do not provide album-wide rollback.
+
 ## Tool `wrtagweb`
 
 <img align="right" width="300" src=".github/screenshot-wrtagweb.png">

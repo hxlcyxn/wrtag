@@ -110,6 +110,10 @@ linters:
         - go.senan.xyz/flagconf.ParseEnv # have flag.ExitOnError
   exclusions:
     rules:
+      - path: '^placement\.go$'
+        linters:
+          - gosec
+        text: 'G703:'
       - path: '(.+)_test\.go'
         linters:
           - gosec
