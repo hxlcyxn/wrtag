@@ -61,7 +61,7 @@ func testProcessDirUnlock(t *testing.T, scenario string) {
 
 	const mbid = "00000000-0000-0000-0000-000000000001"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		fmt.Fprint(w, `{"id":"`+mbid+`","title":"album","media":[{"position":1,"track-count":1,"tracks":[{"position":1,"number":"1","title":"track"}]}]}`)
+		fmt.Fprintf(w, `{"id":"%s","title":"album","media":[{"position":1,"track-count":1,"tracks":[{"position":1,"number":"1","title":"track"}]}]}`, mbid)
 	}))
 	defer server.Close()
 
