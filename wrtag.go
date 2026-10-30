@@ -19,11 +19,9 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 	"unicode"
 
-	"github.com/KarpelesLab/reflink"
 	"github.com/araddon/dateparse"
 	"github.com/argusdusty/treelock"
 	dmp "github.com/sergi/go-diff/diffmatchpatch"
@@ -834,28 +832,8 @@ func (m Move) ProcessPath(ctx context.Context, dc DirContext, src, dest string, 
 		return fmt.Errorf("create dest path: %w", err)
 	}
 
-	if err := os.Rename(src, dest); err != nil {
-		if errNo := syscall.Errno(0); errors.As(err, &errNo) && errNo == 18 /*  invalid cross-device link */ {
-			// we tried to rename across filesystems. copy and delete instead
-			if err := copyFile(src, dest); err != nil {
-				return fmt.Errorf("copy from move: %w", err)
-			}
-			if err := os.Remove(src); err != nil {
-				return fmt.Errorf("remove from move: %w", err)
-			}
-			if err := os.Chmod(dest, mode); err != nil {
-				return fmt.Errorf("chmod dest: %w", err)
-			}
-
-			slog.DebugContext(ctx, "moved path", "from", src, "to", dest)
-			return nil
-		}
-
-		return fmt.Errorf("rename: %w", err)
-	}
-
-	if err := os.Chmod(dest, mode); err != nil {
-		return fmt.Errorf("chmod dest: %w", err)
+	if err := newFilePlacement(copyContents).move(src, dest, mode); err != nil {
+		return err
 	}
 
 	slog.DebugContext(ctx, "moved path", "from", src, "to", dest)
@@ -915,12 +893,8 @@ func (c Copy) ProcessPath(ctx context.Context, dc DirContext, src, dest string, 
 		return fmt.Errorf("create dest path: %w", err)
 	}
 
-	if err := copyFile(src, dest); err != nil {
+	if err := newFilePlacement(copyContents).stage(src, dest, mode); err != nil {
 		return err
-	}
-
-	if err := os.Chmod(dest, mode); err != nil {
-		return fmt.Errorf("chmod dest: %w", err)
 	}
 
 	slog.DebugContext(ctx, "copied path", "from", src, "to", dest)
@@ -959,12 +933,8 @@ func (c Reflink) ProcessPath(ctx context.Context, dc DirContext, src, dest strin
 		return fmt.Errorf("create dest path: %w", err)
 	}
 
-	if err := reflink.Always(src, dest); err != nil {
+	if err := newFilePlacement(reflinkContents).stage(src, dest, mode); err != nil {
 		return fmt.Errorf("reflink file: %w", err)
-	}
-
-	if err := os.Chmod(dest, mode); err != nil {
-		return fmt.Errorf("chmod dest: %w", err)
 	}
 
 	slog.DebugContext(ctx, "reflinked path", "from", src, "to", dest)
@@ -1028,49 +998,6 @@ func trimDestDir(ctx context.Context, dc DirContext, dest string, canModifyDest 
 		return fmt.Errorf("delete extra files: %w", err)
 	}
 
-	return nil
-}
-
-func copyFile(src, dest string) (err error) {
-	srcf, err := os.Open(src) //nolint:gosec
-	if err != nil {
-		return fmt.Errorf("open src: %w", err)
-	}
-	defer srcf.Close()
-
-	tmp, err := os.CreateTemp(filepath.Dir(dest), "")
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if err != nil {
-			if rerr := os.Remove(tmp.Name()); rerr != nil {
-				err = errors.Join(err, rerr)
-			}
-		}
-	}()
-
-	if _, err := io.Copy(tmp, srcf); err != nil {
-		return fmt.Errorf("do copy: %w", err)
-	}
-
-	if st, err := srcf.Stat(); err == nil {
-		if err := tmp.Chmod(st.Mode()); err != nil {
-			return fmt.Errorf("chmod tmp: %w", err)
-		}
-	}
-
-	if err := tmp.Sync(); err != nil {
-		return fmt.Errorf("sync tmp: %w", err)
-	}
-
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close tmp: %w", err)
-	}
-
-	if err := os.Rename(tmp.Name(), dest); err != nil {
-		return fmt.Errorf("do rename: %w", err)
-	}
 	return nil
 }
 
