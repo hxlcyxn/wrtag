@@ -104,7 +104,7 @@ type Config struct {
 func ProcessDir(
 	ctx context.Context, cfg *Config,
 	op FileSystemOperation, srcDir string, cond ImportCondition, useMBID string,
-) (*SearchResult, error) {
+) (result *SearchResult, retErr error) {
 	if cfg.PathFormat.Root() == "" {
 		return nil, errors.New("no path format provided")
 	}
@@ -228,7 +228,9 @@ func ProcessDir(
 			return nil, fmt.Errorf("fetch cover: %w", err)
 		}
 		if coverTmp != "" {
-			defer os.Remove(coverTmp) //nolint:errcheck
+			defer func() {
+				retErr = errors.Join(retErr, removeDownloadedCover(coverTmp, os.Remove))
+			}()
 		}
 	}
 
@@ -1103,9 +1105,14 @@ func processCover(
 
 	if coverNew != "" {
 		destCover := coverPath(coverNew)
-		if err := (Move{}).ProcessPath(ctx, dc, coverNew, destCover, mode); err != nil {
-			return "", fmt.Errorf("move new cover to dest: %w", err)
+		dc.knownDestPaths[destCover] = struct{}{}
+		if !op.CanModifyDest() {
+			return destCover, nil
 		}
+		if err := placeDownloadedCover(coverNew, destCover, mode, downloadedCoverFileOps()); err != nil {
+			return "", fmt.Errorf("place new cover: %w", err)
+		}
+		slog.DebugContext(ctx, "placed downloaded cover", "from", coverNew, "to", destCover)
 		return destCover, nil
 	}
 
