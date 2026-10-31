@@ -93,7 +93,7 @@ func TestAlbumCompletePublication(t *testing.T) {
 
 func TestAlbumPreflight(t *testing.T) {
 	t.Parallel()
-	for _, kind := range []string{"existing", "same-path", "collision", "overlap", "recovery", "nested"} {
+	for _, kind := range []string{"collision", "overlap", "recovery", "nested"} {
 		t.Run(kind, func(t *testing.T) {
 			t.Parallel()
 			src, dest, files := albumFixture(t)

@@ -25,9 +25,13 @@ exec touch 'albums/Khruangbin/A LA SALA/cover.png'
 exec find albums
 cp stdout layout-before
 
-# should be deleted
+# requires explicit selection or removal
 exec touch 'albums/Khruangbin/A LA SALA/extra-file'
 
+! exec wrtag move 'albums/Khruangbin/A LA SALA'
+stderr 'unaccounted destination asset loss'
+exists 'albums/Khruangbin/A LA SALA/extra-file'
+exec rm 'albums/Khruangbin/A LA SALA/extra-file'
 exec wrtag move 'albums/Khruangbin/A LA SALA'
 stderr 'score=100.00%'
 

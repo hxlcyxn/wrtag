@@ -23,13 +23,14 @@ stderr 'score too low'
 
 # but can overwrite with -yes
 exec wrtag move -yes kat_moda/
+stderr 'unselected or changed source assets retained'
 
 # make sure dest dir looks ok according to format
 exec find albums/
 cmp stdout exp-layout
 
-# since we did a move, see if src folder was cleaned up
-! exists kat_moda
+# unselected source assets remain
+exists kat_moda/artist.png
 
 # check new tags
 cd 'albums/Jeff Mills/(1997) Kat Moda/'
