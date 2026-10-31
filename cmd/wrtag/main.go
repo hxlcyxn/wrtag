@@ -182,6 +182,10 @@ func runOperation(
 		"url", "https://musicbrainz.org/release/"+r.Release.ID,
 	)
 
+	if r.PublicationMode != "" {
+		slog.InfoContext(ctx, "album publication", "mode", r.PublicationMode)
+	}
+
 	tbl := table.New(os.Stderr)
 	tbl.SetFormat("\t", " ", "")
 	for _, d := range r.Diff {
@@ -210,7 +214,22 @@ const (
 	notifSyncError    = "sync-error"
 )
 
-func runSync(ctx context.Context, cfg *wrtag.Config, stats *syncStats, dirs []string, ageYounger, ageOlder time.Duration, dryRun bool, numWorkers int) error { //nolint:unparam
+func runSync(ctx context.Context, cfg *wrtag.Config, stats *syncStats, dirs []string, ageYounger, ageOlder time.Duration, dryRun bool, numWorkers int) error {
+	var recoveryPaths []string
+	for _, dir := range dirs {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		paths, err := wrtag.FindAlbumRecoveryPaths(dir)
+		if err != nil {
+			return fmt.Errorf("preflight sync scope %q: %w", dir, err)
+		}
+		recoveryPaths = append(recoveryPaths, paths...)
+	}
+	if len(recoveryPaths) > 0 {
+		return fmt.Errorf("in-progress or interrupted album operation; inspect recovery paths before syncing: %v", recoveryPaths)
+	}
+
 	leaves := make(chan string)
 	go func() {
 		for _, d := range dirs {

@@ -56,18 +56,18 @@ const minScore = 95
 const numTrackGenres = 6
 
 const (
-	thresholdSizeClean uint64 = 20 * 1e6   // 20 MB
-	thresholdSizeTrim  uint64 = 3000 * 1e6 // 3000 MB
+	thresholdSizeClean uint64 = 20 * 1e6 // 20 MB
 )
 
 // SearchResult contains the results of a MusicBrainz lookup and potential import operation.
 type SearchResult struct {
-	Release    *musicbrainz.Release
-	Query      musicbrainz.ReleaseQuery
-	Score      float64
-	DestDir    string
-	Diff       []Diff
-	OriginFile *originfile.OriginFile
+	Release         *musicbrainz.Release
+	Query           musicbrainz.ReleaseQuery
+	Score           float64
+	DestDir         string
+	Diff            []Diff
+	OriginFile      *originfile.OriginFile
+	PublicationMode string
 }
 
 // ImportCondition defines the conditions under which a release will be imported.
@@ -105,6 +105,9 @@ func ProcessDir(
 	ctx context.Context, cfg *Config,
 	op FileSystemOperation, srcDir string, cond ImportCondition, useMBID string,
 ) (*SearchResult, error) {
+	if err := validateAlbumOperation(op); err != nil {
+		return nil, err
+	}
 	if cfg.PathFormat.Root() == "" {
 		return nil, errors.New("no path format provided")
 	}
@@ -175,7 +178,7 @@ func ProcessDir(
 	}
 
 	if len(pathTags) != len(releaseTracks) {
-		return &SearchResult{release, query, 0, "", diff, originFile}, fmt.Errorf("%w: %d remote / %d local", ErrTrackCountMismatch, len(releaseTracks), len(pathTags))
+		return &SearchResult{release, query, 0, "", diff, originFile, ""}, fmt.Errorf("%w: %d remote / %d local", ErrTrackCountMismatch, len(releaseTracks), len(pathTags))
 	}
 
 	var shouldImport bool
@@ -189,7 +192,7 @@ func ProcessDir(
 	}
 
 	if !shouldImport {
-		return &SearchResult{release, query, score, "", diff, originFile}, ErrScoreTooLow
+		return &SearchResult{release, query, score, "", diff, originFile, ""}, ErrScoreTooLow
 	}
 
 	destDir, err := DestDir(&cfg.PathFormat, release)
@@ -232,91 +235,81 @@ func ProcessDir(
 		}
 	}
 
-	// lock both source and destination directories
-	unlock := lockPaths(
-		srcDir,
-		destDir,
-	)
-
-	dc := NewDirContext()
-
-	// move/copy and tag
-	for i := range pathTags {
-		pt, rt, destPath := pathTags[i], releaseTracks[i], destPaths[i]
-
-		if err := op.ProcessPath(ctx, dc, pt.Path, destPath, cfg.FileMode); err != nil {
-			return nil, fmt.Errorf("process path %q: %w", filepath.Base(pt.Path), err)
-		}
-
-		var destTags = map[string][]string{}
-		WriteRelease(destTags, release, labelInfo, genres, &rt.media, &rt.track)
-		ApplyTagConfig(destTags, pt.Tags, cfg.TagConfig)
-
-		if lvl, slog := slog.LevelDebug, slog.Default(); slog.Enabled(ctx, lvl) {
-			logTagChanges(ctx, pt.Path, lvl, pt.Tags, destTags)
-		}
-
-		if !op.CanModifyDest() {
-			continue
-		}
-		if tags.Equal(pt.Tags, destTags) {
-			// try to avoid more io if we can
-			continue
-		}
-
-		if err := tags.WriteTags(destPath, destTags, tags.Clear); err != nil {
-			return nil, fmt.Errorf("write tag file: %w", err)
+	files := make([]albumFile, 0, len(pathTags))
+	for i, pt := range pathTags {
+		files = append(files, albumFile{source: pt.Path, name: filepath.Base(destPaths[i])})
+		if filepath.Dir(destPaths[i]) != destDir {
+			return nil, fmt.Errorf("nested output is unsupported: %s", destPaths[i])
 		}
 	}
-
-	destCover, err := processCover(ctx, op, dc, destDir, cover, coverTmp, cfg.FileMode)
-	if err != nil {
-		return nil, fmt.Errorf("place cover: %w", err)
+	selectedCover := cmp.Or(coverTmp, cover)
+	if selectedCover != "" {
+		files = append(files, albumFile{source: selectedCover, name: "cover" + strings.ToLower(filepath.Ext(selectedCover)), copyOnly: coverTmp != ""})
 	}
-
-	// process addons with new files
-	if op.CanModifyDest() {
-		for _, addon := range cfg.Addons {
-			if err := addon.ProcessRelease(ctx, destCover, destPaths); err != nil {
-				return nil, fmt.Errorf("process addon: %w", err)
-			}
-		}
-	}
-
-	for kf := range cfg.KeepFiles {
-		matches, err := fileutil.GlobDir(srcDir, kf)
+	for pattern := range cfg.KeepFiles {
+		matches, err := fileutil.GlobDir(srcDir, pattern)
 		if err != nil {
-			return nil, fmt.Errorf("glob keep file %q: %w", kf, err)
+			return nil, fmt.Errorf("glob keep file %q: %w", pattern, err)
 		}
 		for _, src := range matches {
-			// only keep regular files, so a pattern like "*" can't pick up disc dirs
-			if info, err := os.Stat(src); err != nil || !info.Mode().IsRegular() {
+			info, err := os.Lstat(src)
+			if err != nil {
+				return nil, err
+			}
+			if !info.Mode().IsRegular() || src == cover || slices.ContainsFunc(pathTags, func(pt PathTags) bool { return pt.Path == src }) {
 				continue
 			}
-			// don't let a broad pattern overwrite the tracks or cover we've already placed
-			if src == cover || slices.ContainsFunc(pathTags, func(pt PathTags) bool { return pt.Path == src }) {
-				continue
-			}
-			name := filepath.Base(src)
-			if err := op.ProcessPath(ctx, dc, src, filepath.Join(destDir, name), cfg.FileMode); err != nil {
-				return nil, fmt.Errorf("process keep file %q: %w", name, err)
+			if !slices.ContainsFunc(files, func(f albumFile) bool { return f.source == src }) {
+				files = append(files, albumFile{source: src, name: filepath.Base(src), protected: true})
 			}
 		}
 	}
-
-	if err := trimDestDir(ctx, dc, destDir, op.CanModifyDest()); err != nil {
-		return nil, fmt.Errorf("trim: %w", err)
-	}
-
-	unlock()
-
-	if srcDir != destDir {
-		if err := op.PostSource(ctx, dc, cfg.PathFormat.Root(), srcDir); err != nil {
-			return nil, fmt.Errorf("clean: %w", err)
+	desiredTags := make([]map[string][]string, len(pathTags))
+	for i, pt := range pathTags {
+		rt := releaseTracks[i]
+		destTags := map[string][]string{}
+		WriteRelease(destTags, release, labelInfo, genres, &rt.media, &rt.track)
+		ApplyTagConfig(destTags, pt.Tags, cfg.TagConfig)
+		desiredTags[i] = destTags
+		if lvl, log := slog.LevelDebug, slog.Default(); log.Enabled(ctx, lvl) {
+			logTagChanges(ctx, pt.Path, lvl, pt.Tags, destTags)
 		}
 	}
+	prepare := func(stage string) error {
+		stagedPaths := make([]string, len(pathTags))
+		for i, pt := range pathTags {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			stagedPaths[i] = filepath.Join(stage, files[i].name)
+			if !tags.Equal(pt.Tags, desiredTags[i]) {
+				if err := tags.WriteTags(stagedPaths[i], desiredTags[i], tags.Clear); err != nil {
+					return fmt.Errorf("write tag file: %w", err)
+				}
+			}
+		}
+		stagedCover := ""
+		if selectedCover != "" {
+			stagedCover = filepath.Join(stage, files[len(pathTags)].name)
+		}
+		for _, a := range cfg.Addons {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if err := a.ProcessRelease(ctx, stagedCover, stagedPaths); err != nil {
+				return fmt.Errorf("process addon: %w", err)
+			}
+		}
+		return nil
+	}
+	publicationMode := "dry-run"
+	albumOps := defaultAlbumIO()
+	albumOps.reportMode = func(mode string) { publicationMode = mode }
+	if err := importAlbum(ctx, op, srcDir, destDir, files, cfg.FileMode, prepare, albumOps); err != nil {
+		return nil, err
+	}
 
-	return &SearchResult{release, query, score, destDir, diff, originFile}, nil
+	return &SearchResult{release, query, score, destDir, diff, originFile, publicationMode}, nil
 }
 
 type releaseTrack struct {
@@ -975,54 +968,6 @@ func mkdirAllFileMode(path string, fileMode os.FileMode) error {
 	dirMode := fileMode.Perm()
 	dirMode |= (dirMode & 0o444) >> 2
 	return os.MkdirAll(path, dirMode)
-}
-
-// trimDestDir deletes all items in a destination dir that don't look like they should be there.
-func trimDestDir(ctx context.Context, dc DirContext, dest string, canModifyDest bool) error {
-	entries, err := os.ReadDir(dest)
-	if !canModifyDest && errors.Is(err, os.ErrNotExist) {
-		// this is fine if we're only doing a dry run
-	} else if err != nil {
-		return fmt.Errorf("read dir: %w", err)
-	}
-
-	var toDelete []string
-	var size uint64
-	for _, entry := range entries {
-		path := filepath.Join(dest, entry.Name())
-		if _, ok := dc.knownDestPaths[path]; ok {
-			continue
-		}
-		if entry.IsDir() {
-			continue
-		}
-		info, err := entry.Info()
-		if err != nil {
-			return fmt.Errorf("get info: %w", err)
-		}
-		size += uint64(info.Size()) //nolint:gosec
-		toDelete = append(toDelete, path)
-	}
-	if size > thresholdSizeTrim {
-		return fmt.Errorf("extra files were too big to remove: %d/%d", size, thresholdSizeTrim)
-	}
-
-	var deleteErrs []error
-	for _, p := range toDelete {
-		if !canModifyDest {
-			slog.InfoContext(ctx, "delete extra file", "path", p)
-			continue
-		}
-		if err := os.Remove(p); err != nil {
-			deleteErrs = append(deleteErrs, err)
-		}
-		slog.InfoContext(ctx, "deleted extra file", "path", p)
-	}
-	if err := errors.Join(deleteErrs...); err != nil {
-		return fmt.Errorf("delete extra files: %w", err)
-	}
-
-	return nil
 }
 
 func copyFile(src, dest string) (err error) {

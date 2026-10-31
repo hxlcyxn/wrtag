@@ -18,6 +18,9 @@
   <div class="flex flex-col items-start gap-2 bg-gray-100 p-3">
     {{ if .SearchResult.Data }}
       <p class="font-bold">{{ printf "%.2f%%" .SearchResult.Data.Score }} match with <a href="https://musicbrainz.org/release/{{ .SearchResult.Data.Release.ID }}" target="_blank">https://musicbrainz.org/release/{{ .SearchResult.Data.Release.ID }}</a></p>
+      {{ if .SearchResult.Data.PublicationMode }}
+        <p>publication: {{ .SearchResult.Data.PublicationMode }}</p>
+      {{ end }}
       {{ if .SearchResult.Data.Diff }}
         {{ template "diff" .SearchResult.Data.Diff }}
       {{ end }}
