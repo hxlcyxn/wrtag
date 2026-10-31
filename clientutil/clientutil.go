@@ -3,6 +3,7 @@
 package clientutil
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"slices"
@@ -38,9 +39,20 @@ func WithLogging(logger *slog.Logger) Middleware {
 	}
 }
 
+type retryDisabledKey struct{}
+
+func WithoutRetry(next http.RoundTripper) http.RoundTripper {
+	return RoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return next.RoundTrip(r.WithContext(context.WithValue(r.Context(), retryDisabledKey{}, true)))
+	})
+}
+
 func WithRetry(maxAttempts int) Middleware {
 	return func(next http.RoundTripper) http.RoundTripper {
 		return RoundTripFunc(func(r *http.Request) (*http.Response, error) {
+			if disabled, _ := r.Context().Value(retryDisabledKey{}).(bool); disabled {
+				return next.RoundTrip(r)
+			}
 			for attempt := 1; ; attempt++ {
 				resp, err := next.RoundTrip(r)
 				if err != nil {
