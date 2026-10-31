@@ -287,8 +287,10 @@ func syncDir(ctx context.Context, cfg *wrtag.Config, ageYounger, ageOlder time.D
 		return nil, err
 	}
 
-	if err := os.Chtimes(srcDir, time.Time{}, time.Now()); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return nil, fmt.Errorf("chtimes %q: %w", srcDir, err)
+	if op.CanModifyDest() {
+		if err := syncTimestamp(srcDir); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("chtimes %q: %w", srcDir, err)
+		}
 	}
 	return r, nil
 }
