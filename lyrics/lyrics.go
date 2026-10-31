@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
 	"strings"
 	"time"
 
@@ -31,7 +30,7 @@ func NewSource(name string) (Source, error) {
 	case "musixmatch":
 		return &Musixmatch{browserClient, rate.NewLimiter(rate.Every(500*time.Millisecond), 1)}, nil
 	case "lrclib":
-		return &LRCLib{&http.Client{}, rate.NewLimiter(rate.Every(time.Minute/180), 1)}, nil
+		return NewLRCLib(DefaultLRCLibConfig())
 	default:
 		return nil, errors.New("unknown source")
 	}

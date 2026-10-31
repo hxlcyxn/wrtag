@@ -724,6 +724,31 @@ The `lyrics` addon can fetch and embed lyric information from [LRCLib](https://l
 
 The format of the addon config is `lyrics <source>...` where the source is one of `lrclib`, `genius`, or `musixmatch`. For example, `"lyrics lrclib genius"`. Note that sources will be tried in the order they are specified.
 
+LRCLIB accepts options before or after the sources:
+
+```text
+addon lyrics lrclib genius lrclib-url=https://lrclib.net/api/get lrclib-timeout=30s lrclib-request-interval=750ms
+```
+
+- `lrclib-url` is the complete lookup URL, defaulting to `https://lrclib.net/api/get`. It must be an absolute HTTP(S) URL with a host, without credentials or fragments. Existing query parameters are preserved while track lookup parameters are set. Only the default LRCLIB origin receives the registered app ID.
+- `lrclib-max-attempts` defaults to `5` and must be a positive integer. It includes the initial request; `1` disables retries. The timeout can stop the lookup before all attempts are used.
+- `lrclib-timeout` defaults to `30s`; `0` disables it. This budget includes HTTP requests, response-body reads and retry waits, but excludes waiting for initial admission. Parent cancellation and deadlines still apply.
+- `lrclib-request-interval` defaults to `750ms` and must be positive. Requests sharing one LRCLIB source run sequentially, with at least this pause after each response, including retries. Separate addon instances and processes do not share pacing.
+
+An [lrcmux](https://github.com/f1nniboy/lrcmux) compatible endpoint can be selected explicitly:
+
+```text
+addon lyrics lrclib genius lrclib-url=https://api.lrcmux.dev/compat/lrclib/api/get
+```
+
+Custom endpoints receive track metadata; configure only endpoints you trust. lrcmux is opt-in, not automatic failover, and compatibility does not guarantee availability. The same timeout, retry, pacing and no-redirect policy applies to custom endpoints.
+
+[LRCLIB recommends](https://lrclib.net/docs#implementation-requirements-request-throttling) sequential requests with 200–500 ms pauses. The 750 ms default adds headroom and stays below its approximate registered-client allowance of 180 requests/minute. The 30 s timeout is a wrtag default, not an LRCLIB recommendation.
+
+LRCLIB retries HTTP 429, 502 and 503 responses up to `lrclib-max-attempts` total attempts (default `5`; `1` disables retries), honoring `Retry-After` seconds or HTTP dates with up to 30% additional jitter. Missing or invalid headers use a backoff of one second per attempt plus jitter. The longer of the request interval and server cooldown applies, including to the next track after an exhausted retry budget. Other errors are not retried by the LRCLIB retry loop.
+
+Unknown or repeated options, invalid URLs or durations, negative timeouts, and LRCLIB options without an `lrclib` source in the same addon are rejected. Effective settings appear in `-config` output. Repeated addon entries within one configuration source are additive. Command-line settings take precedence over environment settings, which take precedence over the configuration file; LRCLIB options apply only to their own addon instance.
+
 LRCLib provides synchronized lyrics (LRC format) when available, which includes timestamps for karaoke-style display in compatible players. If synchronized lyrics are not available, plain lyrics will be used instead.
 
 ## Addon ReplayGain
