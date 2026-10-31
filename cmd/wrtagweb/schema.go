@@ -49,6 +49,10 @@ type Job struct {
 //go:embed schema.sql
 var schema []byte
 
+func markInterruptedJobs(ctx context.Context, db *sql.DB) error {
+	return sqlb.Exec(ctx, db, "update jobs set status=?, error=? where status=?", StatusError, "Operation interrupted by service restart. Inspect source, destination and any recovery paths before explicitly retrying.", StatusInProgress)
+}
+
 func dbMigrate(ctx context.Context, db *sql.DB) error {
 	var nextVer int
 	if err := sqlb.QueryRow(ctx, db, sqlb.Scan(&nextVer), "pragma user_version"); err != nil {

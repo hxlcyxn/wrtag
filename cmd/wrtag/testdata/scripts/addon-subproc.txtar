@@ -11,7 +11,8 @@ exec tag write 'kat_moda/3.flac'
 exec tag write 'kat_moda/*.flac' musicbrainz_albumid 'e47d04a4-7460-427d-a731-cc82386d85f1'
 
 exec wrtag copy -yes kat_moda
-cmp out exp-out
+exec sed -E 's@albums/\.wrtag-.*-stage-[0-9]+@<stage>@g' out
+cmp stdout exp-out
 
 -- echo-script --
 out="$1"
@@ -26,9 +27,9 @@ for f in "$@"; do
 done
 
 -- exp-out --
-dir albums/Kat Moda
-cover albums/Kat Moda/cover.jpg
+dir <stage>
+cover <stage>/cover.jpg
 file count 3
-file albums/Kat Moda/1.flac
-file albums/Kat Moda/2.flac
-file albums/Kat Moda/3.flac
+file <stage>/1.flac
+file <stage>/2.flac
+file <stage>/3.flac

@@ -17,7 +17,7 @@ exec find tmp
 cp blocker albums
 ! exec wrtag copy -yes kat_moda
 stderr '32921095540.jpg'
-stderr 'process path'
+stderr 'not a directory'
 exec find tmp
 ! stdout '\.wrtag-cover'
 cmp albums blocker

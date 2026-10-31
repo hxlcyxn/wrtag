@@ -14,8 +14,14 @@ exec touch 'albums/Kat Moda/keep-file'
 exec touch 'albums/Kat Moda/extra-file-1.huh'
 exec touch 'albums/Kat Moda/extra some other'
 
-# move files, make sure we only delete the 2 extra files. tracks, cover, and keep files remain
+! exec wrtag move -yes 'albums/Kat Moda'
+stderr 'unaccounted destination asset loss'
+exists 'albums/Kat Moda/extra some other'
+exists 'albums/Kat Moda/extra-file-1.huh'
+exists 'albums/Kat Moda/01.03 Alarms.flac'
+
+exec rm 'albums/Kat Moda/extra some other' 'albums/Kat Moda/extra-file-1.huh'
 exec wrtag move -yes 'albums/Kat Moda'
-stderr -count=2 '\bdeleted extra file\b'
-stderr '\bdeleted extra file.*\/extra some other'
-stderr '\bdeleted extra file.*\/extra-file-1\.huh'
+exists 'albums/Kat Moda/1.flac'
+exists 'albums/Kat Moda/cover.png'
+exists 'albums/Kat Moda/keep-file'
