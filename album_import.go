@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"go.senan.xyz/wrtag/coverparse"
 	"io"
 	"io/fs"
 	"log/slog"
@@ -27,6 +28,8 @@ type albumIO struct {
 	removeAll  func(string) error
 	remove     func(string) error
 	chmod      func(string, os.FileMode) error
+	rename     func(string, string) error
+	link       func(string, string) error
 	reportMode func(string)
 	stage      func(string, string) (string, error)
 	transfer   func(context.Context, FileSystemOperation, DirContext, string, string, os.FileMode) error
@@ -38,7 +41,7 @@ var errDirectoryPublicationUnsupported = errors.New("no-replace directory public
 var publishAlbumDirectory = func(string, string) error { return errDirectoryPublicationUnsupported }
 
 func defaultAlbumIO() albumIO {
-	return albumIO{publish: publishAlbumDirectory, removeAll: os.RemoveAll, remove: os.Remove, chmod: os.Chmod, reportMode: func(string) {}, stage: os.MkdirTemp, transfer: func(ctx context.Context, op FileSystemOperation, dc DirContext, src, dest string, mode os.FileMode) error {
+	return albumIO{publish: publishAlbumDirectory, removeAll: os.RemoveAll, remove: os.Remove, chmod: os.Chmod, rename: os.Rename, link: os.Link, reportMode: func(string) {}, stage: os.MkdirTemp, transfer: func(ctx context.Context, op FileSystemOperation, dc DirContext, src, dest string, mode os.FileMode) error {
 		return op.ProcessPath(ctx, dc, src, dest, mode)
 	}}
 }
@@ -159,10 +162,25 @@ func importAlbum(ctx context.Context, op FileSystemOperation, src, dest string, 
 	if err != nil {
 		return err
 	}
-	if fileWithin(src, dest) || fileWithin(dest, src) {
+	sourceInfo, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+	destInfo, statErr := os.Stat(dest)
+	exists := statErr == nil
+	if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+		return statErr
+	}
+	same := exists && os.SameFile(sourceInfo, destInfo)
+	if !same && (fileWithin(src, dest) || fileWithin(dest, src)) {
 		return fmt.Errorf("source/destination overlap: %s, %s", src, dest)
 	}
-	unlock := lockPaths(src, dest)
+	var unlock func()
+	if same {
+		unlock = lockPaths(dest)
+	} else {
+		unlock = lockPaths(src, dest)
+	}
 	defer unlock()
 	for _, p := range []string{src, dest} {
 		paths, err := associatedRecoveryPaths(p)
@@ -173,14 +191,15 @@ func importAlbum(ctx context.Context, op FileSystemOperation, src, dest string, 
 			return fmt.Errorf("in-progress or interrupted album operation; inspect recovery paths: %v", paths)
 		}
 	}
-	if _, err := os.Lstat(dest); err == nil {
-		return fmt.Errorf("album destination already exists: %s", dest)
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
+
 	names := map[string]string{}
 	for i := range files {
 		f := &files[i]
+		parent, resolveErr := resolveAlbumPath(filepath.Dir(f.source))
+		if resolveErr != nil {
+			return resolveErr
+		}
+		f.source = filepath.Join(parent, filepath.Base(f.source))
 		if f.name == "." || f.name == "" || filepath.Base(f.name) != f.name {
 			return fmt.Errorf("invalid flat album path: %s", f.name)
 		}
@@ -195,6 +214,16 @@ func importAlbum(ctx context.Context, op FileSystemOperation, src, dest string, 
 		}
 		if !f.info.Mode().IsRegular() {
 			return fmt.Errorf("selected asset is not a regular file: %s", f.source)
+		}
+	}
+	var oldAssets map[string]os.FileInfo
+	if exists {
+		if !destInfo.IsDir() {
+			return fmt.Errorf("destination is not an album directory: %s", dest)
+		}
+		oldAssets, err = inventoryDestination(src, dest, files, same)
+		if err != nil {
+			return err
 		}
 	}
 	if !op.CanModifyDest() {
@@ -314,10 +343,20 @@ func importAlbum(ctx context.Context, op FileSystemOperation, src, dest string, 
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := publishPreparedAlbum(ctx, stage, dest, ops); err != nil {
+	if exists {
+		if err := verifyDestinationInventory(dest, oldAssets); err != nil {
+			return err
+		}
+		if err := replacePreparedAlbum(ctx, stage, dest, ops); err != nil {
+			return err
+		}
+	} else if err := publishPreparedAlbum(ctx, stage, dest, ops); err != nil {
 		return err
 	}
 	published = true
+	if same {
+		return nil
+	}
 	switch op.(type) {
 	case Move, *Move:
 		if err := cleanAlbumSource(src, files, ops); err != nil {
@@ -359,35 +398,98 @@ func publishPreparedAlbum(ctx context.Context, stage, dest string, ops albumIO) 
 	if err := ops.chmod(dest, info.Mode()); err != nil {
 		return errors.Join(err, ops.remove(dest))
 	}
-	entries, err := os.ReadDir(stage)
+	var published []publishedAlbumPath
+	rootInfo, err := os.Lstat(dest)
 	if err != nil {
-		return errors.Join(err, ops.remove(dest))
+		return err
 	}
-	var published []string
-	for _, e := range entries {
-		target := filepath.Join(dest, e.Name())
+	published = append(published, publishedAlbumPath{dest, rootInfo})
+	err = filepath.WalkDir(stage, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if p == stage {
+			return nil
+		}
 		if err := ctx.Err(); err != nil {
-			return rollbackPreparedFiles(dest, published, err, ops)
+			return err
 		}
-		if err := os.Link(filepath.Join(stage, e.Name()), target); err != nil {
-			return rollbackPreparedFiles(dest, published, err, ops)
+		rel, err := filepath.Rel(stage, p)
+		if err != nil {
+			return err
 		}
-		published = append(published, target)
+		target := filepath.Join(dest, rel)
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		switch {
+		case d.IsDir():
+			if err := os.Mkdir(target, info.Mode()); err != nil {
+				return err
+			}
+		case info.Mode().IsRegular():
+			if err := ops.link(p, target); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("unsupported publication asset: %s", p)
+		}
+		created, err := os.Lstat(target)
+		if err != nil {
+			return err
+		}
+		published = append(published, publishedAlbumPath{target, created})
+		if d.IsDir() {
+			return ops.chmod(target, info.Mode())
+		}
+		return nil
+	})
+	if err != nil {
+		return rollbackPreparedFiles(dest, published, err, ops)
 	}
 	return nil
 }
 
-func rollbackPreparedFiles(dest string, published []string, cause error, ops albumIO) error {
+type publishedAlbumPath struct {
+	path string
+	info os.FileInfo
+}
+
+func rollbackPreparedFiles(_ string, published []publishedAlbumPath, cause error, ops albumIO) error {
 	errs := []error{cause}
-	for _, p := range published {
-		if err := ops.remove(p); err != nil {
-			errs = append(errs, fmt.Errorf("publication cleanup incomplete; survivor %s: %w", p, err))
+	for _, p := range slices.Backward(published) {
+		info, err := os.Lstat(p.path)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err == nil && !os.SameFile(p.info, info) {
+			err = errors.New("path changed after publication")
+		}
+		if err == nil {
+			err = ops.remove(p.path)
+		}
+		if err != nil {
+			errs = append(errs, fmt.Errorf("publication cleanup incomplete; survivor %s: %w", p.path, err))
 		}
 	}
-	if err := ops.remove(dest); err != nil {
-		errs = append(errs, fmt.Errorf("publication cleanup incomplete; inspect %s: %w", dest, err))
-	}
 	return errors.Join(errs...)
+}
+
+func albumAssetHash(p string) ([32]byte, error) {
+	f, err := os.Open(p)
+	if err != nil {
+		return [32]byte{}, err
+	}
+	h := sha256.New()
+	_, copyErr := io.Copy(h, f)
+	closeErr := f.Close()
+	if err := errors.Join(copyErr, closeErr); err != nil {
+		return [32]byte{}, err
+	}
+	var sum [32]byte
+	copy(sum[:], h.Sum(nil))
+	return sum, nil
 }
 
 func cleanAlbumSource(src string, files []albumFile, ops albumIO) error {
@@ -434,20 +536,159 @@ func cleanAlbumSource(src string, files []albumFile, ops albumIO) error {
 	return errors.Join(errs...)
 }
 
-func albumAssetHash(p string) ([32]byte, error) {
-	f, err := os.Open(p)
+func inventoryDestination(src, dest string, files []albumFile, same bool) (map[string]os.FileInfo, error) {
+	inventory := map[string]os.FileInfo{}
+	outputNames := map[string]bool{}
+	selected := map[string]bool{}
+	hasCover := false
+	for _, f := range files {
+		outputNames[f.name] = true
+		selected[filepath.Clean(f.source)] = true
+		if coverparse.IsCover(f.name) {
+			hasCover = true
+		}
+	}
+	var losses []string
+	oldCover := ""
+	consumed := map[string]string{}
+	err := filepath.WalkDir(dest, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if p == dest {
+			return nil
+		}
+		rel, err := filepath.Rel(dest, p)
+		if err != nil {
+			return err
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		inventory[rel] = info
+		if d.IsDir() {
+			if filepath.Dir(rel) != "." {
+				losses = append(losses, p)
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		accounted := info.Mode().IsRegular() && ((same && selected[filepath.Join(src, rel)]) || (!same && outputNames[filepath.Base(rel)]))
+		if accounted && !same {
+			name := filepath.Base(rel)
+			if previous, ok := consumed[name]; ok {
+				losses = append(losses, previous, p)
+			}
+			consumed[name] = p
+		}
+		if accounted && coverparse.IsCover(p) {
+			if oldCover != "" {
+				losses = append(losses, oldCover)
+			}
+			oldCover = p
+		}
+		if !accounted && info.Mode().IsRegular() && coverparse.IsCover(p) && hasCover && oldCover == "" {
+			oldCover = p
+			accounted = true
+		}
+		if !accounted {
+			losses = append(losses, p)
+		}
+		return nil
+	})
 	if err != nil {
-		return [32]byte{}, err
+		return nil, err
 	}
-	h := sha256.New()
-	_, copyErr := io.Copy(h, f)
-	closeErr := f.Close()
-	if err := errors.Join(copyErr, closeErr); err != nil {
-		return [32]byte{}, err
+	for rel, info := range inventory {
+		if !info.IsDir() {
+			continue
+		}
+		supported := false
+		for _, f := range files {
+			if same && filepath.Dir(f.source) == filepath.Join(src, rel) {
+				supported = true
+			}
+			if !same {
+				for child, childInfo := range inventory {
+					if childInfo.Mode().IsRegular() && filepath.Dir(child) == rel && outputNames[filepath.Base(child)] {
+						supported = true
+					}
+				}
+			}
+		}
+		if !supported {
+			losses = append(losses, filepath.Join(dest, rel))
+		}
 	}
-	var sum [32]byte
-	copy(sum[:], h.Sum(nil))
-	return sum, nil
+	if len(losses) != 0 {
+		slices.Sort(losses)
+		return nil, fmt.Errorf("unaccounted destination asset loss; select or move these assets before importing: %v", losses)
+	}
+	return inventory, nil
+}
+
+func verifyDestinationInventory(dest string, inventory map[string]os.FileInfo) error {
+	count := 0
+	err := filepath.WalkDir(dest, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if p == dest {
+			return nil
+		}
+		rel, err := filepath.Rel(dest, p)
+		if err != nil {
+			return err
+		}
+		old, ok := inventory[rel]
+		if !ok {
+			return fmt.Errorf("destination changed during preparation; retained %s", p)
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		if !os.SameFile(old, info) || old.Size() != info.Size() || !old.ModTime().Equal(info.ModTime()) || old.Mode() != info.Mode() {
+			return fmt.Errorf("destination changed during preparation; retained %s", p)
+		}
+		count++
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if count != len(inventory) {
+		return fmt.Errorf("destination changed during preparation: %s", dest)
+	}
+	return nil
+}
+
+func replacePreparedAlbum(ctx context.Context, stage, dest string, ops albumIO) error {
+	backup, err := os.MkdirTemp(filepath.Dir(dest), recoveryPrefix(dest)+"backup-*")
+	if err != nil {
+		return err
+	}
+	if err := ops.remove(backup); err != nil {
+		return fmt.Errorf("backup reservation cleanup incomplete; inspect %s: %w", backup, err)
+	}
+	if err := ops.rename(dest, backup); err != nil {
+		return fmt.Errorf("move destination %s to backup %s: %w", dest, backup, err)
+	}
+	if err := publishPreparedAlbum(ctx, stage, dest, ops); err != nil {
+		restoreErr := publishPreparedAlbum(context.WithoutCancel(ctx), backup, dest, ops)
+		if restoreErr != nil {
+			return errors.Join(err, fmt.Errorf("restoration failed; inspect destination %s and original backup %s: %w", dest, backup, restoreErr))
+		}
+		if cleanupErr := ops.removeAll(backup); cleanupErr != nil {
+			return errors.Join(err, fmt.Errorf("original restored; backup cleanup incomplete; inspect %s: %w", backup, cleanupErr))
+		}
+		return fmt.Errorf("publication failed; original destination restored at %s: %w", dest, err)
+	}
+	if err := ops.removeAll(backup); err != nil {
+		return fmt.Errorf("destination complete at %s; backup cleanup incomplete; inspect %s: %w", dest, backup, err)
+	}
+	return nil
 }
 
 func finalizeAlbumAsset(stage, name string, mode os.FileMode, ops albumIO) error {

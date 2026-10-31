@@ -10,8 +10,8 @@ exec rand kat_moda/big-file 21000000
 env WRTAG_PATH_FORMAT='albums/{{ .Release.Title | safepath }}/{{ .Track.Position }}{{ .Ext }}'
 
 # test clean source
-! exec wrtag move -yes kat_moda/
-stderr 'folder was too big for clean up: 21000000/20000000'
+exec wrtag move -yes kat_moda/
+stderr 'unselected or changed source assets retained'
 
 exec find kat_moda/
 cmp stdout exp-find
@@ -20,8 +20,9 @@ cmp stdout exp-find
 mv kat_moda/big-file 'albums/Kat Moda/big-file'
 
 # test trim dest, works since 21MB < 3000MB
-exec wrtag move -yes 'albums/Kat Moda'
-stderr 'deleted extra file.*big-file'
+! exec wrtag move -yes 'albums/Kat Moda'
+stderr 'unaccounted destination asset loss'
+exists 'albums/Kat Moda/big-file'
 
 -- exp-find --
 kat_moda

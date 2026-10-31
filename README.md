@@ -158,13 +158,44 @@ preservation guarantee.
 it must not be released/deployed without PR 2d replacement and same-path retagging
 and combined CLI/web/sync compatibility validation.
 
+#### Existing albums and backup recovery
+
+Existing and same-path albums use the same preparation pipeline. Before changing
+an existing destination, wrtag rejects unaccounted asset loss: same-path imports
+account for the exact selected original files; external replacements require old
+track/kept-file names to match planned output names. A selected new cover can
+replace one old cover. Unmatched bonus tracks, unknown assets, duplicate old
+output names, symlinks and unsupported subdirectories are rejected, not trimmed.
+Select assets with `keep-file` or move/remove them explicitly before retrying.
+For external replacement, `keep-file` selects from the **source**, not the old
+destination. Cue files are ordinary kept assets; their references are not rewritten.
+Supported disc inputs still flatten; required addon-created assets are retained.
+
+After preparation and an unchanged-destination inventory check, wrtag renames the
+old destination to `.wrtag-<destination>-<identity>-backup-<random>`, publishes the
+prepared album, then removes the backup and selected external move sources.
+Readers may briefly see no destination: replacement is not portably atomic.
+Handled publication failure attempts restoration without overwriting a newly
+appeared destination; failed restoration reports the surviving backup/destination.
+A **destination complete; backup/source/staging cleanup incomplete** error does
+not undo publication and is not an instruction to rerun an incomplete source.
+
+For manual recovery, follow the stopped-writer/inventory steps above. A same-path
+backup may contain the only originals; an external source does not make an old
+backup disposable. If the destination is absent, restore an inspected, verified
+backup only after confirming the target is still absent. If a destination exists,
+preserve both trees and reconcile explicitly without overwrite. Do not delete a
+backup merely because another directory looks complete. Successful operations
+leave no recovery directories; interrupted operations require explicit inspection
+and resolution before a fresh import.
+
 ### Re-tagging already imported music
 
 Re-tagging your music can be useful for a few reasons. For example, if your [path-format](#path-format) configuration has changed, or the metadata in the MusicBrainz database has changed.
 
 #### Re-tagging a single release
 
-Since a `move` operation always cleans up the source directory - and is smart about the music already being in place - a re-tag is just a move pointed at some music that is already in place:
+A re-tag uses the same complete-album preparation pipeline, then replaces the original album. Point a move at music already in place:
 
 ```console
 # path-format is /my/music/XXX

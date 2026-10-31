@@ -11,6 +11,7 @@ exec touch albums/deep/down/inside/extra.txt
 # move deepest in tree
 exec wrtag move -yes albums/deep/down/inside/kat_moda
 
-# we deleted the whole tree all the way up until the root
-! exists albums/deep
+# unrelated parent assets remain
+exists albums/deep/down/inside/extra.txt
+! exists albums/deep/down/inside/kat_moda
 exists albums
