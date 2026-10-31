@@ -130,3 +130,15 @@ linters:
         linters:
           - noctx
         text: 'use log/slog\.'
+      - path: '^album_import\.go$'
+        linters:
+          - gosec
+        text: 'G304'
+      - path: '^album_import_linux_test\.go$'
+        linters:
+          - usetesting
+        text: 'os.MkdirTemp'
+      - path: '^wrtag\.go$'
+        linters:
+          - unused
+        text: 'func processCover is unused'

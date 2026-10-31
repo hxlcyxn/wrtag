@@ -16,6 +16,7 @@ cmp 02-backup kat_moda/02.flac
 cmp 03-backup kat_moda/03.flac
 
 # same for dry run
+env WRTAG_PATH_FORMAT='preview/{{ .Release.Title | safepath }}/{{ .Track.Position }}{{ .Ext }}'
 exec wrtag -log-level debug copy -dry-run -yes -mbid e47d04a4-7460-427d-a731-cc82386d85f1 kat_moda/
 
 # we get tag change messages for dry run
