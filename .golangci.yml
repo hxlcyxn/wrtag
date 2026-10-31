@@ -114,6 +114,14 @@ linters:
         linters:
           - gosec
         text: 'G703:'
+      - path: '^cover_placement\.go$'
+        linters:
+          - gosec
+        text: 'G304'
+      - path: '^cover_placement_linux_test\.go$'
+        linters:
+          - usetesting
+        text: 'os.MkdirTemp'
       - path: '(.+)_test\.go'
         linters:
           - gosec

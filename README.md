@@ -84,6 +84,14 @@ The `wrtag` tool is the main command line tool for music organisation. It has su
 
 ### Importing new music
 
+Downloaded covers, including upgrades, are copied into a temporary file inside the
+album destination, given the configured file mode, and closed before publication.
+This allows setgid destination directories to supply the cover's group. An existing
+cover is preserved if preparation fails. Download and staging cleanup failures are
+reported; an error after publication does not mean the published cover was rolled
+back. Dry runs do not download or publish covers. These guarantees apply to
+downloaded covers, not to the whole album import.
+
 #### Moving from source
 
 `wrtag` is the main command line tool that works on a single folder and requires an operation such as `move` or `copy`.
