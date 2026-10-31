@@ -23,11 +23,49 @@ type LyricsAddon struct {
 }
 
 func NewLyricsAddon(conf string) (LyricsAddon, error) {
-	var sources lyrics.MultiSource
+	config := lyrics.DefaultLRCLibConfig()
+	var names []string
+	seen := make(map[string]bool)
+	hasLRCLib := false
 	for arg := range strings.FieldsSeq(conf) {
-		source, err := lyrics.NewSource(arg)
+		name, value, option := strings.Cut(arg, "=")
+		if !option {
+			names = append(names, name)
+			hasLRCLib = hasLRCLib || name == "lrclib"
+			continue
+		}
+		if seen[name] {
+			return LyricsAddon{}, fmt.Errorf("duplicate option %q", name)
+		}
+		seen[name] = true
+		if name != "lrclib-timeout" && name != "lrclib-request-interval" {
+			return LyricsAddon{}, fmt.Errorf("unknown option %q", name)
+		}
+		duration, err := time.ParseDuration(value)
+		if err != nil || duration < 0 || (name == "lrclib-request-interval" && duration == 0) {
+			return LyricsAddon{}, fmt.Errorf("invalid duration for %q: %q", name, value)
+		}
+		if name == "lrclib-timeout" {
+			config.Timeout = duration
+		} else {
+			config.RequestInterval = duration
+		}
+	}
+	if len(seen) > 0 && !hasLRCLib {
+		return LyricsAddon{}, errors.New("LRCLIB options require an lrclib source")
+	}
+
+	var sources lyrics.MultiSource
+	for _, name := range names {
+		var source lyrics.Source
+		var err error
+		if name == "lrclib" {
+			source, err = lyrics.NewLRCLib(config)
+		} else {
+			source, err = lyrics.NewSource(name)
+		}
 		if err != nil {
-			return LyricsAddon{}, fmt.Errorf("source %q: %w", arg, err)
+			return LyricsAddon{}, fmt.Errorf("source %q: %w", name, err)
 		}
 		sources = append(sources, source)
 	}

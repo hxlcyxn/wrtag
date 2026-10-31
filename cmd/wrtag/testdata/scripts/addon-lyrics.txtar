@@ -1,0 +1,23 @@
+exec wrtag -config-path lyrics.conf -addon 'lyrics lrclib-timeout=1s lrclib lrclib-request-interval=2s' -config
+stdout 'lyrics \(lrclib lrclib-timeout=1s lrclib-request-interval=2s\)'
+! stdout 'lrclib-timeout=3s'
+
+env WRTAG_ADDON='lyrics lrclib lrclib-timeout=0 lrclib-request-interval=5s'
+exec wrtag -config-path lyrics.conf -config
+stdout 'lyrics \(lrclib lrclib-timeout=0s lrclib-request-interval=5s\)'
+! stdout 'lrclib-timeout=3s'
+
+exec wrtag -config-path lyrics.conf -addon 'lyrics lrclib lrclib-timeout=6s' -config
+stdout 'lrclib-timeout=6s'
+! stdout 'lrclib-timeout=0s'
+
+env WRTAG_ADDON=
+exec wrtag -config-path lyrics.conf -config
+stdout 'lyrics \(lrclib lrclib-timeout=3s lrclib-request-interval=4s\), lyrics \(genius, lrclib lrclib-timeout=30s lrclib-request-interval=750ms\)'
+
+! exec wrtag -addon 'lyrics genius lrclib-timeout=1s' -config
+stderr 'LRCLIB options require an lrclib source'
+
+-- lyrics.conf --
+addon lyrics lrclib lrclib-timeout=3s lrclib-request-interval=4s
+addon lyrics genius lrclib
