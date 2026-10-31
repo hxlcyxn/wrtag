@@ -1084,7 +1084,7 @@ func maybeFetchUpgradedCover(ctx context.Context, caa *musicbrainz.CAAClient, re
 		return resp.ContentLength == info.Size()
 	}
 
-	coverTmp, err := downloadMusicBrainzCover(ctx, caa, release, sources, skipFunc)
+	coverTmp, err := downloadMusicBrainzCover(ctx, caa, release, sources, skipFunc, maxSize)
 	if err != nil {
 		return "", fmt.Errorf("maybe fetch better cover: %w", err)
 	}
@@ -1119,7 +1119,7 @@ func processCover(
 	return "", nil
 }
 
-func downloadMusicBrainzCover(ctx context.Context, caa *musicbrainz.CAAClient, release *musicbrainz.Release, sources []musicbrainz.CoverSource, skipFunc func(*http.Response) bool) (string, error) {
+func downloadMusicBrainzCover(ctx context.Context, caa *musicbrainz.CAAClient, release *musicbrainz.Release, sources []musicbrainz.CoverSource, skipFunc func(*http.Response) bool, maxSize int64) (string, error) {
 	coverURL, err := caa.GetCoverURL(ctx, release, sources...)
 	if err != nil {
 		return "", err
@@ -1152,13 +1152,42 @@ func downloadMusicBrainzCover(ctx context.Context, caa *musicbrainz.CAAClient, r
 	if err != nil {
 		return "", fmt.Errorf("mktmp: %w", err)
 	}
-	defer tmpf.Close()
-
-	if _, err := io.Copy(tmpf, resp.Body); err != nil {
-		return "", fmt.Errorf("copy to tmp: %w", err)
+	name, oversized, err := writeCoverDownload(resp.Body, tmpf, maxSize)
+	if err != nil {
+		return "", err
 	}
+	if oversized {
+		slog.WarnContext(ctx, "skipping downloading cover which is larger than max size", "max_size_bytes", maxSize)
+	}
+	return name, nil
+}
 
-	return tmpf.Name(), nil
+func writeCoverDownload(body io.Reader, tmpf interface {
+	io.WriteCloser
+	Name() string
+}, maxSize int64) (name string, oversized bool, err error) {
+	defer func() {
+		if closeErr := tmpf.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("close cover tmp: %w", closeErr))
+		}
+		if err != nil || oversized {
+			name = ""
+			if removeErr := os.Remove(tmpf.Name()); removeErr != nil {
+				err = errors.Join(err, fmt.Errorf("remove cover tmp: %w", removeErr))
+			}
+		}
+	}()
+
+	if _, err := io.Copy(tmpf, io.LimitReader(body, maxSize)); err != nil {
+		return "", false, fmt.Errorf("copy to tmp: %w", err)
+	}
+	var extra [1]byte
+	if n, err := io.ReadFull(body, extra[:]); n > 0 {
+		return "", true, nil
+	} else if err != io.EOF {
+		return "", false, fmt.Errorf("read cover overflow: %w", err)
+	}
+	return tmpf.Name(), false, nil
 }
 
 func dirSize(path string) (uint64, error) {
