@@ -129,6 +129,8 @@ Bulk operations are done with the `sync` subcommand. Unlike the `copy` and `move
 
 By default, `sync` recurses through all directories rooted in `path-format` and finds leaf directories. A leaf directory is one that has no sub-folders, and therefore looks like a release. The tracks are read, and if they have a `MUSICBRAINZ_ALBUMID` (e.g., from `copy` or `move`), the release info is fetched from MusicBrainz and the release is re-tagged.
 
+After a successful sync, the source directory (if it still exists) has both its modification and access timestamps set to the current time. Dry-runs do not write this sync marker, though reading files may still update access times. On Linux, macOS, the BSDs and Solaris/illumos, the kernel supplies the time, allowing writable directories to be marked without ownership where the OS permits it. Other platforms use explicit timestamps and may require ownership or additional permissions.
+
 If no `MUSICBRAINZ_ALBUMID` is present, the release is matched as it usually would, and only re-tagged if a high match score is calculated.
 
 ```console
