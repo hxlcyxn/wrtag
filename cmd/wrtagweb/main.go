@@ -348,7 +348,7 @@ func main() {
 	defer cancel()
 	errgrp, ctx := errgroup.WithContext(ctx)
 
-	if err := sqlb.Exec(ctx, db, "update jobs set status=? where status in (?, ?)", StatusEnqueued, StatusInProgress, StatusEnqueued); err != nil {
+	if err := markInterruptedJobs(ctx, db); err != nil {
 		slog.ErrorContext(ctx, "update old jobs", "err", err)
 		return
 	}

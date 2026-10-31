@@ -106,6 +106,58 @@ $ wrtag copy -yes "Example"      # copies and tags `Example` into the library, u
 $ wrtag copy -mbid "abc" -yes    # overwrite matched MusicBrainz release UUID even if low match
 ```
 
+### Safe album imports and manual recovery
+
+The album pipeline supports only built-in `Move`, `Copy` and `Reflink` operations
+(values or non-nil pointers). Custom `FileSystemOperation` implementations,
+including wrappers, are rejected before mutation rather than treated as copies.
+
+An import prepares the complete album in a destination-local sibling directory:
+tracks, selected cover, source `keep-file` matches, tags and addons all finish
+before publication. Originals remain until publication completes, even for moves.
+Output is flat; supported one-level disc inputs are flattened. Addons must respect
+the staged paths supplied to them. New regular addon assets are retained, but
+collisions with kept assets, case-insensitive filename collisions and unsupported
+staged directories are rejected. Downloaded covers are copied independently of
+TMPDIR; Unix assets are restaged locally when necessary to inherit the album GID.
+
+Linux uses no-replace directory publication where supported. Otherwise wrtag
+**warns** and publishes the fully prepared album using exclusive per-file hard
+links: readers may see partial placement, and rollback can fail. Filesystems
+without hard links fail safely. Operational failures do not select the fallback.
+`SearchResult.PublicationMode` identifies the selected safety mode.
+
+Moves remove only selected source files whose identity, size, modification time
+and mode remain unchanged. Unselected extras are retained with warnings; unrelated
+parent directories are not removed. Errors saying **destination complete; cleanup
+incomplete** require inspecting the remaining source/staging paths, not blindly
+retrying from a possibly incomplete source. Dry runs create or modify nothing.
+
+Staging names are `.wrtag-<destination>-<identity>-stage-<random>`; the readable
+name is bounded for filesystem limits. Unresolved associated paths prevent a new
+import. `FindAlbumRecoveryPaths(scope)` lists associated scope siblings and
+recursive recovery directories without following symlinks; a missing scope is
+an error unless associated recovery paths exist.
+
+If an operation is interrupted:
+
+1. Stop import/sync writers and do not blindly retry the failed job.
+2. Inspect every reported source, destination and recognizable sibling path;
+   preserve copies before removing or moving anything. Names are inspection hints,
+   not proof that a directory is safe to delete.
+3. Verify track identities, tags and all selected/unknown assets. Reconcile any
+   partial fallback publication manually, without overwriting concurrent content.
+4. Resolve the inspected recovery paths explicitly, then start a fresh import.
+   There is no automatic resume, journal or crash-durability guarantee.
+
+Cooperative writers are required. Process-local locks are not cross-process
+isolation; arbitrary addon side effects and source atime changes are outside the
+preservation guarantee.
+
+**Unreleased compatibility gate:** PR 2c alone accepts only absent destinations;
+it must not be released/deployed without PR 2d replacement and same-path retagging
+and combined CLI/web/sync compatibility validation.
+
 ### Re-tagging already imported music
 
 Re-tagging your music can be useful for a few reasons. For example, if your [path-format](#path-format) configuration has changed, or the metadata in the MusicBrainz database has changed.
