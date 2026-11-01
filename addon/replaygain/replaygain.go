@@ -51,11 +51,21 @@ func (a ReplayGainAddon) ProcessRelease(ctx context.Context, cover string, paths
 	}
 
 	if !a.force {
-		first, err := tags.ReadTags(paths[0])
-		if err != nil {
-			return fmt.Errorf("read first file: %w", err)
+		complete := true
+		for _, path := range paths {
+			t, err := tags.ReadTags(path)
+			if err != nil {
+				return fmt.Errorf("read tags %q: %w", path, err)
+			}
+			if normtag.Get(t, normtag.ReplayGainTrackGain) == "" ||
+				normtag.Get(t, normtag.ReplayGainTrackPeak) == "" ||
+				normtag.Get(t, normtag.ReplayGainAlbumGain) == "" ||
+				normtag.Get(t, normtag.ReplayGainAlbumPeak) == "" {
+				complete = false
+				break
+			}
 		}
-		if normtag.Get(first, normtag.ReplayGainTrackGain) != "" {
+		if complete {
 			return nil
 		}
 	}
