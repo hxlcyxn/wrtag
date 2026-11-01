@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -43,6 +44,9 @@ func (l LyricsAddon) Check() error {
 }
 
 func (l LyricsAddon) ProcessRelease(ctx context.Context, cover string, paths []string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	var wg sync.WaitGroup
 
 	var pathErrs = make([]error, len(paths))
@@ -63,8 +67,12 @@ func (l LyricsAddon) ProcessRelease(ctx context.Context, cover string, paths []s
 				}
 
 				lyricData, err := l.source.Search(ctx, normtag.Get(t, normtag.ArtistCredit), normtag.Get(t, normtag.Title), duration)
+				if parentErr := ctx.Err(); parentErr != nil {
+					return parentErr
+				}
 				if err != nil && !errors.Is(err, lyrics.ErrTrackNotFound) {
-					return err
+					slog.WarnContext(ctx, "leaving lyrics unchanged after provider failure", "path", path, "error", err)
+					return nil
 				}
 
 				lt := map[string][]string{}
@@ -80,7 +88,7 @@ func (l LyricsAddon) ProcessRelease(ctx context.Context, cover string, paths []s
 
 	wg.Wait()
 
-	return errors.Join(pathErrs...)
+	return errors.Join(append(pathErrs, ctx.Err())...)
 }
 
 func (l LyricsAddon) String() string {
