@@ -430,7 +430,40 @@ func processJobs(ctx context.Context, cfg *wrtag.Config, notifs *notifications.N
 	return nil
 }
 
-func processJob(ctx context.Context, cfg *wrtag.Config, notifs *notifications.Notifications, researchLinkQuerier *researchlink.Builder, publicURL string, db *sql.DB, jobSSEUpdate func(uint64), job Job) error {
+type jobLoggerKey struct{}
+
+func jobLogger(ctx context.Context) *slog.Logger {
+	if logger, ok := ctx.Value(jobLoggerKey{}).(*slog.Logger); ok && logger != nil {
+		return logger
+	}
+	return slog.Default()
+}
+
+func processJob(ctx context.Context, cfg *wrtag.Config, notifs *notifications.Notifications, researchLinkQuerier *researchlink.Builder, publicURL string, db *sql.DB, jobSSEUpdate func(uint64), job Job) (err error) {
+	started := time.Now()
+	logger := jobLogger(ctx).With("job_id", job.ID, "operation", job.Operation, "src", job.SourcePath)
+	attrs := func() []any {
+		a := []any{"duration", time.Since(started)}
+		if job.DestPath != "" {
+			a = append(a, "dst", job.DestPath)
+		}
+		return a
+	}
+	logger.InfoContext(ctx, "import started", attrs()...)
+	defer func() {
+		a := attrs()
+		switch {
+		case err != nil:
+			logger.ErrorContext(ctx, "import failed", append(a, "err", err)...)
+		case job.Status == StatusError:
+			logger.ErrorContext(ctx, "import failed", append(a, "err", job.Error)...)
+		case job.Status == StatusNeedsInput:
+			logger.InfoContext(ctx, "import needs input", append(a, "err", job.Error)...)
+		default:
+			logger.InfoContext(ctx, "import completed", a...)
+		}
+	}()
+
 	jobSSEUpdate(job.ID)
 	defer jobSSEUpdate(job.ID)
 

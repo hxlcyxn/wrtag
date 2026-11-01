@@ -166,6 +166,8 @@ flowchart LR
     d["Release imported"]
 ```
 
+Import lifecycle events (`import started`, `import completed`, `import failed`, and `import needs input`) are written to stderr with `job_id`, `operation`, `src`, `duration`, and `dst` when available. Failed imports include the process error and do not stop the worker from processing subsequent jobs. Under systemd, view these events in the service journal; they are not stored as a log history in the web database. The database and UI retain the job's status, result, and error separately. Logs include filesystem paths and error diagnostics, so restrict access appropriately.
+
 ### API
 
 Jobs are added to the queue with an HTTP request like `POST <wrtag.host>/op/<copy|move|reflink>` with form value `path=<absolute path to directory>`. Optional form value `mbid=<musicbrainz release URL>` can be supplied if you know your release as well as `confirm` if you really know your release. All of the form values can be sent in the HTML form body along with the `Content-Type` set to `application/x-www-form-urlencoded`, or as URL query parameters.
