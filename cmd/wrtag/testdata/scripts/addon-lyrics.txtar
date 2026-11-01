@@ -1,23 +1,24 @@
-exec wrtag -config-path lyrics.conf -addon 'lyrics lrclib-timeout=1s lrclib lrclib-request-interval=2s' -config
-stdout 'lyrics \(lrclib lrclib-timeout=1s lrclib-request-interval=2s\)'
+exec wrtag -config-path lyrics.conf -addon 'lyrics lrclib-url=https://cli.example/get lrclib-timeout=1s lrclib lrclib-request-interval=2s lrclib-max-attempts=2' -config
+stdout 'lyrics \(lrclib lrclib-url=https://cli.example/get lrclib-timeout=1s lrclib-request-interval=2s lrclib-max-attempts=2\)'
 ! stdout 'lrclib-timeout=3s'
 
-env WRTAG_ADDON='lyrics lrclib lrclib-timeout=0 lrclib-request-interval=5s'
+env WRTAG_ADDON='lyrics lrclib lrclib-url=https://env.example/get lrclib-timeout=0 lrclib-request-interval=5s lrclib-max-attempts=3'
 exec wrtag -config-path lyrics.conf -config
-stdout 'lyrics \(lrclib lrclib-timeout=0s lrclib-request-interval=5s\)'
+stdout 'lyrics \(lrclib lrclib-url=https://env.example/get lrclib-timeout=0s lrclib-request-interval=5s lrclib-max-attempts=3\)'
 ! stdout 'lrclib-timeout=3s'
 
 exec wrtag -config-path lyrics.conf -addon 'lyrics lrclib lrclib-timeout=6s' -config
-stdout 'lrclib-timeout=6s'
+stdout 'lrclib-url=https://lrclib.net/api/get lrclib-timeout=6s'
+! stdout 'https://env.example/get'
 ! stdout 'lrclib-timeout=0s'
 
 env WRTAG_ADDON=
 exec wrtag -config-path lyrics.conf -config
-stdout 'lyrics \(lrclib lrclib-timeout=3s lrclib-request-interval=4s\), lyrics \(genius, lrclib lrclib-timeout=30s lrclib-request-interval=750ms\)'
+stdout 'lyrics \(lrclib lrclib-url=https://file.example/get lrclib-timeout=3s lrclib-request-interval=4s lrclib-max-attempts=4\), lyrics \(genius, lrclib lrclib-url=https://lrclib.net/api/get lrclib-timeout=30s lrclib-request-interval=750ms lrclib-max-attempts=5\)'
 
 ! exec wrtag -addon 'lyrics genius lrclib-timeout=1s' -config
 stderr 'LRCLIB options require an lrclib source'
 
 -- lyrics.conf --
-addon lyrics lrclib lrclib-timeout=3s lrclib-request-interval=4s
+addon lyrics lrclib lrclib-url=https://file.example/get lrclib-timeout=3s lrclib-request-interval=4s lrclib-max-attempts=4
 addon lyrics genius lrclib

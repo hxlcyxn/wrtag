@@ -10,12 +10,13 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"go.senan.xyz/wrtag/clientutil"
 )
 
-var lrclibBaseURL = `https://lrclib.net/api/get`
+const defaultLRCLibURL = `https://lrclib.net/api/get`
 
 // public client-side app id, not a secret
 // https://lrclib.net/docs#implementation-requirements-client-identification
@@ -25,22 +26,25 @@ const lrclibAppID = "i9MlkzOG0ymkTK1HdWKfiaRv6P-Pd4LAK1f38ThSlH0"
 const (
 	defaultLRCLibTimeout         = 30 * time.Second
 	defaultLRCLibRequestInterval = 750 * time.Millisecond
-	lrclibMaxAttempts            = 5
+	defaultLRCLibMaxAttempts     = 5
 	lrclibRetryJitter            = 0.3
 )
 
 type LRCLibConfig struct {
+	URL             string
 	Timeout         time.Duration
 	RequestInterval time.Duration
+	MaxAttempts     int
 }
 
 func DefaultLRCLibConfig() LRCLibConfig {
-	return LRCLibConfig{Timeout: defaultLRCLibTimeout, RequestInterval: defaultLRCLibRequestInterval}
+	return LRCLibConfig{URL: defaultLRCLibURL, Timeout: defaultLRCLibTimeout, RequestInterval: defaultLRCLibRequestInterval, MaxAttempts: defaultLRCLibMaxAttempts}
 }
 
 type LRCLib struct {
 	HTTPClient  *http.Client
 	config      LRCLibConfig
+	endpoint    *url.URL
 	gate        chan struct{}
 	nextRequest time.Time
 }
@@ -49,11 +53,24 @@ func NewLRCLib(config LRCLibConfig) (*LRCLib, error) {
 	if config.Timeout < 0 || config.RequestInterval <= 0 {
 		return nil, errors.New("LRCLIB requires a nonnegative timeout and positive request interval")
 	}
+	if config.MaxAttempts <= 0 {
+		return nil, errors.New("LRCLIB requires positive max attempts")
+	}
+	endpoint, err := url.Parse(config.URL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid LRCLIB URL: %w", err)
+	}
+	if (endpoint.Scheme != "http" && endpoint.Scheme != "https") || endpoint.Hostname() == "" || endpoint.User != nil || strings.Contains(config.URL, "#") {
+		return nil, errors.New("LRCLIB URL must be absolute HTTP(S) with a host and without credentials or fragments")
+	}
+	if _, err := url.ParseQuery(endpoint.RawQuery); err != nil {
+		return nil, fmt.Errorf("invalid LRCLIB URL query: %w", err)
+	}
 	client := clientutil.Wrap(&http.Client{
 		Timeout:       config.Timeout,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}, clientutil.WithoutRetry)
-	return &LRCLib{HTTPClient: client, config: config, gate: make(chan struct{}, 1)}, nil
+	return &LRCLib{HTTPClient: client, config: config, endpoint: endpoint, gate: make(chan struct{}, 1)}, nil
 }
 
 func waitLRCLib(ctx context.Context, until time.Time) error {
@@ -96,28 +113,31 @@ func (l *LRCLib) Search(ctx context.Context, artist, song string, duration time.
 		if retryAfter.After(l.nextRequest) {
 			l.nextRequest = retryAfter
 		}
-		if !retry || attempt >= lrclibMaxAttempts {
+		if !retry || attempt >= l.config.MaxAttempts {
 			return data, err
 		}
 	}
 }
 
 func (l *LRCLib) String() string {
-	return fmt.Sprintf("lrclib lrclib-timeout=%s lrclib-request-interval=%s", l.config.Timeout, l.config.RequestInterval)
+	return fmt.Sprintf("lrclib lrclib-url=%s lrclib-timeout=%s lrclib-request-interval=%s lrclib-max-attempts=%d", l.config.URL, l.config.Timeout, l.config.RequestInterval, l.config.MaxAttempts)
 }
 
 func (l *LRCLib) search(ctx context.Context, artist, song string, duration time.Duration, attempt int) (string, time.Time, bool, error) {
-	u, _ := url.Parse(lrclibBaseURL)
+	u := *l.endpoint
 	q := u.Query()
 	q.Set("artist_name", artist)
 	q.Set("track_name", song)
+	q.Del("duration")
 	if duration > 0 {
 		q.Set("duration", fmt.Sprintf("%.0f", duration.Seconds()))
 	}
 	u.RawQuery = q.Encode()
 
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
-	req.Header.Set("Lrclib-App-Id", lrclibAppID)
+	if u.Scheme == "https" && strings.EqualFold(u.Hostname(), "lrclib.net") && (u.Port() == "" || u.Port() == "443") {
+		req.Header.Set("Lrclib-App-Id", lrclibAppID)
+	}
 
 	resp, err := l.HTTPClient.Do(req)
 	if err != nil {
@@ -129,7 +149,7 @@ func (l *LRCLib) search(ctx context.Context, artist, song string, duration time.
 		return "", time.Time{}, false, ErrTrackNotFound
 	}
 	if resp.StatusCode/100 != 2 {
-		retry := resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable
+		retry := resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusBadGateway || resp.StatusCode == http.StatusServiceUnavailable
 		var until time.Time
 		if retry {
 			until = lrclibRetryAfter(resp.Header.Get("Retry-After"), attempt, time.Now())
