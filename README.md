@@ -627,6 +627,8 @@ The `lyrics` addon can fetch and embed lyric information from [LRCLib](https://l
 
 The format of the addon config is `lyrics <source>...` where the source is one of `lrclib`, `genius`, or `musixmatch`. For example, `"lyrics lrclib genius"`. Note that sources will be tried in the order they are specified.
 
+Provider, network and response decoding failures are logged with the source and track, and the next source is tried. A successful empty response (including an instrumental track) stops fallback. If every source fails, the addon warns and leaves lyrics unchanged; the import can succeed with warnings and later addons such as ReplayGain still run. Existing lyrics are skipped. Tag read/write errors and parent cancellation or deadlines remain fatal; a provider timeout with a live parent allows fallback.
+
 LRCLib provides synchronized lyrics (LRC format) when available, which includes timestamps for karaoke-style display in compatible players. If synchronized lyrics are not available, plain lyrics will be used instead.
 
 ## Addon ReplayGain
