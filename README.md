@@ -636,7 +636,7 @@ The `replaygain` addon computes and adds [ReplayGain 2.0](https://wiki.hydrogena
 > [!NOTE]
 > The ReplayGain addon requires the [`rsgain`](https://github.com/complexlogic/rsgain) program to available in your `$PATH`
 
-The format of the addon config is `replaygain <opts>...` where opts can be `true-peak` and `force`. If the force option is passed, ReplayGain information is recomputed even if it’s already present in the files.
+The format of the addon config is `replaygain <opts>...` where opts can be `true-peak` and `force`. ReplayGain is skipped only when every track has track gain, track peak, album gain and album peak tags; otherwise the whole release is recalculated. If the force option is passed, ReplayGain information is recomputed even if it’s already present in the files.
 
 ## Addon Subprocess
 
