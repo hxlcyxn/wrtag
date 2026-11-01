@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -38,6 +39,18 @@ func NewLyricsAddon(conf string) (LyricsAddon, error) {
 			return LyricsAddon{}, fmt.Errorf("duplicate option %q", name)
 		}
 		seen[name] = true
+		if name == "lrclib-url" {
+			config.URL = value
+			continue
+		}
+		if name == "lrclib-max-attempts" {
+			attempts, err := strconv.Atoi(value)
+			if err != nil || attempts <= 0 {
+				return LyricsAddon{}, fmt.Errorf("invalid max attempts: %q", value)
+			}
+			config.MaxAttempts = attempts
+			continue
+		}
 		if name != "lrclib-timeout" && name != "lrclib-request-interval" {
 			return LyricsAddon{}, fmt.Errorf("unknown option %q", name)
 		}

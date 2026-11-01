@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -23,7 +24,7 @@ func lrclibResponseForTest(status int, retryAfter, body string) *http.Response {
 
 func lrclibForTest(t *testing.T, timeout, interval time.Duration, transport http.RoundTripper) *LRCLib {
 	t.Helper()
-	source, err := NewLRCLib(LRCLibConfig{Timeout: timeout, RequestInterval: interval})
+	source, err := NewLRCLib(LRCLibConfig{URL: defaultLRCLibURL, Timeout: timeout, RequestInterval: interval, MaxAttempts: defaultLRCLibMaxAttempts})
 	require.NoError(t, err)
 	source.HTTPClient.Transport = clientutil.WithoutRetry(clientutil.WithRetry(5)(transport))
 	return source
@@ -79,7 +80,7 @@ func (b lrclibTrackedBody) Close() error {
 
 func TestLRCLibRetries(t *testing.T) {
 	t.Parallel()
-	for _, status := range []int{429, 503} {
+	for _, status := range []int{http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable} {
 		for _, exhaust := range []bool{false, true} {
 			t.Run(http.StatusText(status)+fmtBool(exhaust), func(t *testing.T) {
 				t.Parallel()
@@ -114,6 +115,26 @@ func TestLRCLibRetries(t *testing.T) {
 				})
 			})
 		}
+	}
+}
+
+func TestLRCLibMaxAttempts(t *testing.T) {
+	t.Parallel()
+	for _, attempts := range []int{1, 2, 7} {
+		t.Run(fmt.Sprint(attempts), func(t *testing.T) {
+			t.Parallel()
+			synctest.Test(t, func(t *testing.T) {
+				calls := 0
+				source := lrclibForTest(t, 0, time.Millisecond, clientutil.RoundTripFunc(func(r *http.Request) (*http.Response, error) {
+					calls++
+					return lrclibResponseForTest(http.StatusBadGateway, "0", ""), nil
+				}))
+				source.config.MaxAttempts = attempts
+				_, err := source.Search(t.Context(), "", "", 0)
+				require.Error(t, err)
+				assert.Equal(t, attempts, calls)
+			})
+		})
 	}
 }
 
@@ -285,12 +306,15 @@ func TestLRCLibConfiguration(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, 30*time.Second, lrclib.HTTPClient.Timeout)
 	assert.Equal(t, 750*time.Millisecond, lrclib.config.RequestInterval)
+	assert.Equal(t, 5, lrclib.config.MaxAttempts)
 	require.ErrorIs(t, lrclib.HTTPClient.CheckRedirect(nil, nil), http.ErrUseLastResponse)
 
 	for _, config := range []LRCLibConfig{
-		{Timeout: -time.Second, RequestInterval: time.Second},
-		{Timeout: time.Second, RequestInterval: 0},
-		{Timeout: time.Second, RequestInterval: -time.Second},
+		{URL: defaultLRCLibURL, Timeout: -time.Second, RequestInterval: time.Second, MaxAttempts: 5},
+		{URL: defaultLRCLibURL, Timeout: time.Second, RequestInterval: 0, MaxAttempts: 5},
+		{URL: defaultLRCLibURL, Timeout: time.Second, RequestInterval: -time.Second, MaxAttempts: 5},
+		{URL: defaultLRCLibURL, RequestInterval: time.Second, MaxAttempts: 0},
+		{URL: defaultLRCLibURL, RequestInterval: time.Second, MaxAttempts: -1},
 	} {
 		_, err := NewLRCLib(config)
 		require.Error(t, err)
@@ -310,4 +334,125 @@ func TestLRCLibTransportError(t *testing.T) {
 	}))
 	_, err := source.Search(t.Context(), "", "", 0)
 	assert.ErrorIs(t, err, want)
+}
+
+func TestLRCLibEndpointValidation(t *testing.T) {
+	t.Parallel()
+	for _, endpoint := range []string{"", "/api/get", "//example.org/get", "ftp://example.org/get", "https:///get", "https://:443/get", "https://user@example.org/get", "https://user:pass@example.org/get", "https://example.org/get#fragment", "https://example.org/get#", "https://example.org/%zz", "https://example.org/?x=%zz", "https://exa mple.org/get", "://"} {
+		t.Run(endpoint, func(t *testing.T) {
+			t.Parallel()
+			config := DefaultLRCLibConfig()
+			config.URL = endpoint
+			_, err := NewLRCLib(config)
+			require.Error(t, err)
+		})
+	}
+}
+
+func TestLRCLibEndpointAppID(t *testing.T) {
+	t.Parallel()
+	for _, endpoint := range []string{"https://lrclib.net/other", "https://LRCLIB.NET:443/get?key=value", "http://lrclib.net/api/get", "https://lrclib.net:8443/api/get", "https://lrclib.net.example.org/api/get"} {
+		t.Run(endpoint, func(t *testing.T) {
+			t.Parallel()
+			config := DefaultLRCLibConfig()
+			config.URL = endpoint
+			source, err := NewLRCLib(config)
+			require.NoError(t, err)
+			source.HTTPClient.Transport = clientutil.RoundTripFunc(func(r *http.Request) (*http.Response, error) {
+				if strings.HasPrefix(endpoint, "https://lrclib.net/other") || strings.Contains(endpoint, "LRCLIB.NET:443") {
+					assert.Equal(t, lrclibAppID, r.Header.Get("Lrclib-App-Id"))
+				} else {
+					assert.Empty(t, r.Header.Get("Lrclib-App-Id"))
+				}
+				return lrclibResponseForTest(200, "", `{}`), nil
+			})
+			_, err = source.Search(t.Context(), "", "", 0)
+			require.NoError(t, err)
+		})
+	}
+}
+
+func TestLRCLibCustomEndpoint(t *testing.T) {
+	t.Parallel()
+	var calls int
+	var previous time.Time
+	const interval = 10 * time.Millisecond
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/compat/lrclib/api/get", r.URL.Path)
+		assert.Equal(t, []string{"one", "two"}, r.URL.Query()["key"])
+		assert.Equal(t, "Björk & friends", r.URL.Query().Get("artist_name"))
+		assert.Equal(t, "曲 / ?", r.URL.Query().Get("track_name"))
+		if calls < 2 {
+			assert.Equal(t, "123", r.URL.Query().Get("duration"))
+		} else {
+			assert.NotContains(t, r.URL.Query(), "duration")
+		}
+		assert.Empty(t, r.Header.Get("Lrclib-App-Id"))
+		if calls > 0 {
+			assert.GreaterOrEqual(t, time.Since(previous), interval)
+		}
+		previous = time.Now()
+		calls++
+		switch calls {
+		case 1:
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusServiceUnavailable)
+		case 2:
+			_, err := fmt.Fprint(w, `{"syncedLyrics":"synced","plainLyrics":"plain"}`)
+			assert.NoError(t, err)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	config := DefaultLRCLibConfig()
+	config.URL = server.URL + "/compat/lrclib/api/get?key=one&key=two&artist_name=old&track_name=old&duration=1"
+	config.RequestInterval = interval
+	source, err := NewLRCLib(config)
+	require.NoError(t, err)
+	data, err := source.Search(t.Context(), "Björk & friends", "曲 / ?", 123*time.Second)
+	require.NoError(t, err)
+	assert.Equal(t, "synced", data)
+	_, err = source.Search(t.Context(), "Björk & friends", "曲 / ?", 0)
+	require.ErrorIs(t, err, ErrTrackNotFound)
+	assert.Equal(t, 3, calls)
+	defaultSource, err := NewSource("lrclib")
+	require.NoError(t, err)
+	assert.Contains(t, fmt.Sprint(defaultSource), "lrclib-url=https://lrclib.net/api/get")
+}
+
+func TestLRCLibCustomEndpointRedirect(t *testing.T) {
+	t.Parallel()
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("redirect was followed")
+	}))
+	defer target.Close()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusFound)
+	}))
+	defer server.Close()
+	config := DefaultLRCLibConfig()
+	config.URL = server.URL
+	source, err := NewLRCLib(config)
+	require.NoError(t, err)
+	_, err = source.Search(t.Context(), "", "", 0)
+	require.ErrorContains(t, err, "302")
+}
+
+func TestLRCLibCustomEndpointTimeout(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		err := http.NewResponseController(w).Flush()
+		assert.NoError(t, err)
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+	config := DefaultLRCLibConfig()
+	config.URL = server.URL
+	config.Timeout = 50 * time.Millisecond
+	source, err := NewLRCLib(config)
+	require.NoError(t, err)
+	_, err = source.Search(t.Context(), "", "", 0)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
 }
