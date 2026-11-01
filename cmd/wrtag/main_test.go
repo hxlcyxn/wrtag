@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/rand"
 	"embed"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -30,7 +31,7 @@ func TestMain(m *testing.M) {
 	var t http.Transport
 	t.RegisterProtocol("file", http.NewFileTransportFS(responses))
 
-	http.DefaultTransport = &t
+	http.DefaultTransport = lyricsFailureTransport{&t}
 
 	os.Setenv("WRTAG_MB_BASE_URL", "file:///testdata/responses/musicbrainz/ws/2")
 	os.Setenv("WRTAG_MB_RATE_LIMIT", "0")
@@ -48,6 +49,17 @@ func TestMain(m *testing.M) {
 		"mod-time":  mainModTime,
 		"rand":      mainRand,
 	})
+}
+
+type lyricsFailureTransport struct {
+	fallback http.RoundTripper
+}
+
+func (t lyricsFailureTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.URL.Hostname() == "lrclib.net" {
+		return nil, errors.New("test lyrics provider unavailable")
+	}
+	return t.fallback.RoundTrip(req)
 }
 
 func TestScripts(t *testing.T) {

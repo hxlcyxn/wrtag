@@ -263,6 +263,8 @@ flowchart LR
     d["Release imported"]
 ```
 
+Import lifecycle events (`import started`, `import completed`, `import failed`, and `import needs input`) are written to stderr with `job_id`, `operation`, `src`, `duration`, and `dst` when available. Failed imports include the process error and do not stop the worker from processing subsequent jobs. Under systemd, view these events in the service journal; they are not stored as a log history in the web database. The database and UI retain the job's status, result, and error separately. Logs include filesystem paths and error diagnostics, so restrict access appropriately.
+
 ### API
 
 Jobs are added to the queue with an HTTP request like `POST <wrtag.host>/op/<copy|move|reflink>` with form value `path=<absolute path to directory>`. Optional form value `mbid=<musicbrainz release URL>` can be supplied if you know your release as well as `confirm` if you really know your release. All of the form values can be sent in the HTML form body along with the `Content-Type` set to `application/x-www-form-urlencoded`, or as URL query parameters.
@@ -749,6 +751,8 @@ LRCLIB retries HTTP 429, 502 and 503 responses up to `lrclib-max-attempts` total
 
 Unknown or repeated options, invalid URLs or durations, negative timeouts, and LRCLIB options without an `lrclib` source in the same addon are rejected. Effective settings appear in `-config` output. Repeated addon entries within one configuration source are additive. Command-line settings take precedence over environment settings, which take precedence over the configuration file; LRCLIB options apply only to their own addon instance.
 
+Provider, network and response decoding failures are logged with the source and track, and the next source is tried. A successful empty response (including an instrumental track) stops fallback. If every source fails, the addon warns and leaves lyrics unchanged; the import can succeed with warnings and later addons such as ReplayGain still run. Existing lyrics are skipped. Tag read/write errors and parent cancellation or deadlines remain fatal; a provider timeout with a live parent allows fallback.
+
 LRCLib provides synchronized lyrics (LRC format) when available, which includes timestamps for karaoke-style display in compatible players. If synchronized lyrics are not available, plain lyrics will be used instead.
 
 ## Addon ReplayGain
@@ -758,7 +762,7 @@ The `replaygain` addon computes and adds [ReplayGain 2.0](https://wiki.hydrogena
 > [!NOTE]
 > The ReplayGain addon requires the [`rsgain`](https://github.com/complexlogic/rsgain) program to available in your `$PATH`
 
-The format of the addon config is `replaygain <opts>...` where opts can be `true-peak` and `force`. If the force option is passed, ReplayGain information is recomputed even if it’s already present in the files.
+The format of the addon config is `replaygain <opts>...` where opts can be `true-peak` and `force`. ReplayGain is skipped only when every track has track gain, track peak, album gain and album peak tags; otherwise the whole release is recalculated. If the force option is passed, ReplayGain information is recomputed even if it’s already present in the files.
 
 ## Addon Subprocess
 

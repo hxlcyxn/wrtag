@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -37,23 +38,35 @@ func NewSource(name string) (Source, error) {
 }
 
 var ErrTrackNotFound = errors.New("track not found")
+var ErrProviderFailed = errors.New("lyrics provider failed")
 
 type MultiSource []Source
 
 func (ms MultiSource) Search(ctx context.Context, artist, song string, duration time.Duration) (string, error) {
+	var failures []error
 	for _, src := range ms {
-		lyricData, err := src.Search(ctx, artist, song, duration)
-		if err != nil && !errors.Is(err, ErrTrackNotFound) {
+		if err := ctx.Err(); err != nil {
 			return "", err
 		}
-		if lyricData != "" {
+		lyricData, err := src.Search(ctx, artist, song, duration)
+		if parentErr := ctx.Err(); parentErr != nil {
+			return "", parentErr
+		}
+		if err == nil {
 			return lyricData, nil
 		}
-		// if we got empty lyrics without ErrTrackNotFound, the track was found but has no lyrics
-		// stop trying other sources
-		if err == nil {
-			return "", nil
+		if errors.Is(err, ErrTrackNotFound) {
+			continue
 		}
+		failure := fmt.Errorf("source %v, artist %q, track %q: %w", src, artist, song, err)
+		failures = append(failures, failure)
+		slog.WarnContext(ctx, "lyrics provider failed", "source", fmt.Sprint(src), "artist", artist, "track", song, "error", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if len(failures) != 0 {
+		return "", errors.Join(append([]error{ErrProviderFailed}, failures...)...)
 	}
 	return "", ErrTrackNotFound
 }
